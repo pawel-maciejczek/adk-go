@@ -95,6 +95,8 @@ type InvocationContext interface {
 	EndInvocation()
 	// Ended returns whether the invocation has ended.
 	Ended() bool
+
+	WithContext(ctx context.Context) InvocationContext
 }
 
 // ReadonlyContext provides read-only access to invocation context data.

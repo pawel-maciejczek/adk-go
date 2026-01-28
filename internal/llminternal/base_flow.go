@@ -19,10 +19,12 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log"
 	"maps"
 	"slices"
 	"strings"
 
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/genai"
 
 	"google.golang.org/adk/agent"
@@ -31,6 +33,7 @@ import (
 	icontext "google.golang.org/adk/internal/context"
 	"google.golang.org/adk/internal/plugininternal/plugincontext"
 	"google.golang.org/adk/internal/telemetry"
+	"google.golang.org/adk/internal/telemetry/adktrace"
 	"google.golang.org/adk/internal/toolinternal"
 	"google.golang.org/adk/internal/utils"
 	"google.golang.org/adk/model"
@@ -116,6 +119,13 @@ func (f *Flow) Run(ctx agent.InvocationContext) iter.Seq2[*session.Event, error]
 	}
 }
 
+func agentTracingYield(span trace.Span, yield func(*session.Event, error) bool) func(*session.Event, error) bool {
+	return func(e *session.Event, err error) bool {
+		defer adktrace.AfterInvokeAgent(span, e, err)
+		return yield(e, err)
+	}
+}
+
 func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event, error] {
 	return func(yield func(*session.Event, error) bool) {
 		if f.Model == nil {
@@ -135,6 +145,7 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 		if ctx.Ended() {
 			return
 		}
+
 		spans := telemetry.StartTrace(ctx, "call_llm")
 		// Create event to pass to callback state delta
 		stateDelta := make(map[string]any)
@@ -169,7 +180,7 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 
 			// Build the event and yield.
 			modelResponseEvent := f.finalizeModelResponseEvent(ctx, resp, tools, stateDelta)
-			telemetry.TraceLLMCall(spans, ctx, req, modelResponseEvent)
+			telemetry.TraceLLMCall(spans, ctx.Session().ID(), req, modelResponseEvent)
 			if !yield(modelResponseEvent, nil) {
 				return
 			}
@@ -268,8 +279,23 @@ func toolPreprocess(ctx agent.InvocationContext, req *model.LLMRequest, tools []
 	return nil
 }
 
+func generateContentTracingYield(span trace.Span, yield func(*model.LLMResponse, error) bool) func(*model.LLMResponse, error) bool {
+	return func(r *model.LLMResponse, err error) bool {
+		defer adktrace.AfterGenerateContent(span, r, err)
+		return yield(r, err)
+	}
+}
+
 func (f *Flow) callLLM(ctx agent.InvocationContext, req *model.LLMRequest, stateDelta map[string]any) iter.Seq2[*model.LLMResponse, error] {
 	return func(yield func(*model.LLMResponse, error) bool) {
+		// spanCtx, cancel := telemetry.SpanFromContext(ctx)
+		// ctx := ctx.WithContext()
+		tctx, span := adktrace.StartGenerateContent(ctx, adktrace.GenerateContentParams{
+			ModelName: "TODO model name",
+		})
+		defer span.End()
+		ctx = ctx.WithContext(tctx)
+		yield = generateContentTracingYield(span, yield)
 		pluginManager := pluginManagerFromContext(ctx)
 		if pluginManager != nil {
 			cctx := icontext.NewCallbackContextWithDelta(ctx, stateDelta)
@@ -470,9 +496,16 @@ Suggested fixes:
 //
 // TODO: accept filters to include/exclude function calls.
 // TODO: check feasibility of running tool.Run concurrently.
-func (f *Flow) handleFunctionCalls(ctx agent.InvocationContext, toolsDict map[string]tool.Tool, resp *model.LLMResponse) (*session.Event, error) {
+func (f *Flow) handleFunctionCalls(ctx agent.InvocationContext, toolsDict map[string]tool.Tool, resp *model.LLMResponse) (mergedEvent *session.Event, err error) {
+	sctx, span := adktrace.StartMergedToolCalls(ctx)
+	defer span.End()
+	ctx = ctx.WithContext(sctx)
+	defer func() {
+		adktrace.AfterMergedToolCalls(span, mergedEvent, err)
+	}()
 	var fnResponseEvents []*session.Event
-
+	defer span.End()
+	ctx = ctx.WithContext(sctx)
 	fnCalls := utils.FunctionCalls(resp.Content)
 	toolNames := slices.Collect(maps.Keys(toolsDict))
 	var result map[string]any
@@ -536,6 +569,8 @@ func (f *Flow) handleFunctionCalls(ctx agent.InvocationContext, toolsDict map[st
 }
 
 func (f *Flow) runOnToolErrorCallbacks(toolCtx tool.Context, tool tool.Tool, fArgs map[string]any, err error) (map[string]any, error) {
+	span := trace.SpanFromContext(toolCtx)
+	log.Printf("-----[%v]-----running tool %v", span, tool.Name())
 	pluginManager := pluginManagerFromContext(toolCtx)
 	if pluginManager != nil {
 		result, err := pluginManager.RunOnToolErrorCallback(toolCtx, tool, fArgs, err)
@@ -591,6 +626,88 @@ func (f *Flow) callTool(toolCtx tool.Context, tool toolinternal.FunctionTool, fA
 		return map[string]any{"error": err.Error()}
 	}
 	return response
+}
+
+func (f *Flow) handleFunctionCallsOld(ctx agent.InvocationContext, toolsDict map[string]tool.Tool, resp *model.LLMResponse) (mergedEvent *session.Event, err error) {
+	sctx, span := adktrace.StartMergedToolCalls(ctx)
+	defer span.End()
+	ctx = ctx.WithContext(sctx)
+	defer func() {
+		adktrace.AfterMergedToolCalls(span, mergedEvent, err)
+	}()
+	var fnResponseEvents []*session.Event
+	defer span.End()
+	ctx = ctx.WithContext(sctx)
+	fnCalls := utils.FunctionCalls(resp.Content)
+	for _, fnCall := range fnCalls {
+		ev, err := f.handleToolCall(ctx, toolsDict, fnCall)
+		if err != nil {
+			return nil, err
+		}
+		fnResponseEvents = append(fnResponseEvents, ev)
+
+	}
+	mergedEvent, err = mergeParallelFunctionResponseEvents(fnResponseEvents)
+	if err != nil {
+		return mergedEvent, err
+	}
+	// this is needed for debug traces of parallel calls
+	// spans := telemetry.StartTrace(ctx, "execute_tool (merged)")
+	// telemetry.TraceMergedToolCalls(spans, mergedEvent)
+	// TODO add details
+	return mergedEvent, nil
+}
+
+func (f *Flow) handleToolCall(ctx agent.InvocationContext, toolsDict map[string]tool.Tool, fnCall *genai.FunctionCall) (*session.Event, error) {
+	sctx, span := adktrace.StartExecuteTool(ctx, adktrace.ExecuteToolParams{
+		ToolName: fnCall.Name,
+	})
+	// Defer on each execution
+	defer span.End()
+	ctx = ctx.WithContext(sctx)
+	curTool, ok := toolsDict[fnCall.Name]
+	if !ok {
+		return nil, fmt.Errorf("unknown tool: %q", fnCall.Name)
+	}
+	funcTool, ok := curTool.(toolinternal.FunctionTool)
+	if !ok {
+		return nil, fmt.Errorf("tool %q is not a function tool", curTool.Name())
+	}
+	tctx, span := adktrace.StartExecuteTool(ctx, adktrace.ExecuteToolParams{
+		ToolName:  fnCall.Name,
+		ModelName: "TODO model name",
+	})
+	ctx = ctx.WithContext(tctx)
+	toolCtx := toolinternal.NewToolContext(ctx, fnCall.ID, &session.EventActions{StateDelta: make(map[string]any)})
+	// toolCtx := tool.
+	spans := telemetry.StartTrace(ctx, "execute_tool "+fnCall.Name)
+
+	result := f.callTool(funcTool, fnCall.Args, toolCtx)
+	adktrace.AfterExecuteTool(span, result)
+	span.End()
+
+	// TODO: agent.canonical_after_tool_callbacks
+	// TODO: handle long-running tool.
+	ev := session.NewEvent(ctx.InvocationID())
+	ev.LLMResponse = model.LLMResponse{
+		Content: &genai.Content{
+			Role: "user",
+			Parts: []*genai.Part{
+				{
+					FunctionResponse: &genai.FunctionResponse{
+						ID:       fnCall.ID,
+						Name:     fnCall.Name,
+						Response: result,
+					},
+				},
+			},
+		},
+	}
+	ev.Author = ctx.Agent().Name()
+	ev.Branch = ctx.Branch()
+	ev.Actions = *toolCtx.Actions()
+	telemetry.TraceToolCall(spans, curTool, fnCall.Args, ev)
+	return ev, nil
 }
 
 func (f *Flow) invokeBeforeToolCallbacks(toolCtx tool.Context, tool tool.Tool, fArgs map[string]any) (map[string]any, error) {
