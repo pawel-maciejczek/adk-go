@@ -115,7 +115,7 @@ type Runner struct {
 func (r *Runner) Run(ctx context.Context, userID, sessionID string, msg *genai.Content, cfg agent.RunConfig) iter.Seq2[*session.Event, error] {
 	// TODO(hakim): we need to validate whether cfg is compatible with the Agent.
 	//   see adk-python/src/google/adk/runners.py Runner._new_invocation_context.
-	// TODO: setup tracer.
+	// TODO(pmaciejczek): setup tracer.
 	return func(yield func(*session.Event, error) bool) {
 		resp, err := r.sessionService.Get(ctx, &session.GetRequest{
 			AppName:   r.appName,

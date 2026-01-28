@@ -22,11 +22,12 @@ import (
 )
 
 // APIServerSpanExporter is a custom SpanExporter that stores relevant span data.
-// Stores attributes of specific spans (call_llm, send_data, execute_tool) keyed by `gcp.vertex.agent.event_id`.
+// Stores attributes of specific spans (call_llm, send_data, execute_tool or semconv genai spans) keyed by `gcp.vertex.agent.event_id`.
 // This is used for debugging individual events.
 // APIServerSpanExporter implements sdktrace.SpanExporter interface.
 type APIServerSpanExporter struct {
-	traceDict map[string]map[string]string
+	traceDict           map[string]map[string]string
+	newTelemetryEnabled bool
 }
 
 // NewAPIServerSpanExporter returns a APIServerSpanExporter instance
@@ -44,7 +45,7 @@ func (s *APIServerSpanExporter) GetTraceDict() map[string]map[string]string {
 // ExportSpans implements custom export function for sdktrace.SpanExporter.
 func (s *APIServerSpanExporter) ExportSpans(ctx context.Context, spans []sdktrace.ReadOnlySpan) error {
 	for _, span := range spans {
-		if span.Name() == "call_llm" || span.Name() == "send_data" || strings.HasPrefix(span.Name(), "execute_tool") {
+		if isCustomAdkSpan(span) || isSemconvOtelSpan(span) {
 			spanAttributes := span.Attributes()
 			attributes := make(map[string]string)
 			for _, attribute := range spanAttributes {
@@ -59,6 +60,14 @@ func (s *APIServerSpanExporter) ExportSpans(ctx context.Context, spans []sdktrac
 		}
 	}
 	return nil
+}
+
+func isCustomAdkSpan(span sdktrace.ReadOnlySpan) bool {
+	return span.Name() == "call_llm" || span.Name() == "send_data"
+}
+
+func isSemconvOtelSpan(span sdktrace.ReadOnlySpan) bool {
+	return strings.HasPrefix(span.Name(), "execute_tool") || strings.HasPrefix(span.Name(), "invoke_agent") || strings.HasPrefix(span.Name(), "generate_content")
 }
 
 // Shutdown is a function that sdktrace.SpanExporter has, should close the span exporter connections.

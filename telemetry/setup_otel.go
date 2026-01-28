@@ -1,0 +1,215 @@
+// Copyright 2025 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Package telemetry implements the open telemetry in ADK.
+//
+// WARNING: telemetry provided by ADK (internaltelemetry package) may change (e.g. attributes and their names)
+// because we're in process to standardize and unify telemetry across all ADKs.
+package telemetry
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/log/global"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+)
+
+func newInternal(ctx context.Context, cfg *config) (*telemetryService, error) {
+	tp, err := initTracerProvider(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	// TODO init logger provider
+	// TODO init meter provider
+
+	return &telemetryService{
+		tp: tp,
+		mp: cfg.MeterProvider,
+		lp: cfg.LoggerProvider,
+	}, nil
+}
+
+type telemetryService struct {
+	tp *sdktrace.TracerProvider
+	mp *sdkmetric.MeterProvider
+	lp *sdklog.LoggerProvider
+}
+
+func (t *telemetryService) TraceProvider() *sdktrace.TracerProvider {
+	return t.tp
+}
+
+func (t *telemetryService) MeterProvider() *sdkmetric.MeterProvider {
+	return t.mp
+}
+
+func (t *telemetryService) LoggerProvider() *sdklog.LoggerProvider {
+	return t.lp
+}
+
+func (t *telemetryService) Shutdown(ctx context.Context) error {
+	var err error
+	if t.tp != nil {
+		errors.Join(err, t.tp.Shutdown(ctx))
+	}
+	if t.mp != nil {
+		errors.Join(err, t.mp.Shutdown(ctx))
+	}
+	if t.lp != nil {
+		errors.Join(err, t.lp.Shutdown(ctx))
+	}
+	return err
+}
+
+func (t *telemetryService) SetGlobalProviders() {
+	if t.tp != nil {
+		otel.SetTracerProvider(t.tp)
+	}
+	if t.mp != nil {
+		otel.SetMeterProvider(t.mp)
+	}
+	if t.lp != nil {
+		global.SetLoggerProvider(t.lp)
+	}
+}
+
+func configureInternal(ctx context.Context, opts ...Option) (*config, error) {
+	cfg := &config{}
+	newOpts, err := otelProvidersFromEnv(ctx)
+	if err != nil {
+		return &config{}, err
+	}
+	opts = append(opts, newOpts...)
+
+	for _, opt := range opts {
+		if err := opt.apply(cfg); err != nil {
+			return &config{}, err
+		}
+	}
+	if cfg.oTelToCloud {
+		if cfg.Credentials == nil {
+			adc, err := defaultCredentials(ctx)
+			if err != nil {
+				return &config{}, err
+			}
+			cfg.Credentials = adc
+		}
+	}
+
+	// TODO resource
+	return cfg, nil
+}
+
+func otelProvidersFromEnv(ctx context.Context) ([]Option, error) {
+	var opts []Option
+
+	_, otelEndpointExists := os.LookupEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	_, otelTracesEndpointExists := os.LookupEnv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+	// _, otelMetricsEndpointExists := os.LookupEnv("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT")
+	// _, otelLogsEndpointExists := os.LookupEnv("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT")
+	// TODO order
+	if otelEndpointExists || otelTracesEndpointExists {
+		exporter, err := otlptracehttp.New(ctx)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, WithSpanProcessors(sdktrace.NewBatchSpanProcessor(
+			exporter,
+		)))
+
+	}
+	// if otelEndpointExists || otelMetricsEndpointExists {
+	// 	reader, err := otlpmetrichttp.New(ctx)
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
+	// 	opts = append(opts, WithMetricReaders(sdkmetric.NewPeriodicReader(reader)))
+	// }
+	// if otelEndpointExists || otelLogsEndpointExists {
+	// 	processor, err := otlploghttp.New(ctx)
+	// 	if err != nil {
+	// 		return nil, err
+	// 	}
+	// 	opts = append(opts, WithLogRecordProcessors(sdklog.NewBatchProcessor(processor)))
+	// }
+	return opts, nil
+}
+
+func defaultCredentials(ctx context.Context) (*google.Credentials, error) {
+	// adc, err := credentials.DetectDefault(&credentials.DetectOptions{
+	// 	Scopes: []string{"https://www.googleapis.com/auth/cloud-platform"},
+	// })
+	// if err != nil {
+	// 	return nil, fmt.Errorf("failed to find default credentials: %w", err)
+	// }
+	adc, err := google.FindDefaultCredentials(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// TODO replace with ADC - figure out why it's not populated by go auth2 lib
+	// projectID, err = adc.ProjectID() != ""
+	var ok bool
+	adc.ProjectID, ok = os.LookupEnv("GOOGLE_CLOUD_PROJECT")
+	if !ok {
+		return nil, fmt.Errorf("adk telemetry requires a quota project, which is not set by default. To learn how to set your quota project, see https://cloud.google.com/docs/authentication/adc-troubleshooting/user-creds: %w")
+	}
+	return adc, nil
+}
+
+// ref https://source.corp.google.com/piper///depot/google3/third_party/py/google/adk/telemetry/setup.py;l=157
+func initTracerProvider(ctx context.Context, cfg *config) (*sdktrace.TracerProvider, error) {
+	opts := []sdktrace.TracerProviderOption{
+		sdktrace.WithResource(cfg.Resource),
+	}
+	for _, p := range cfg.SpanProcessors {
+		opts = append(opts, sdktrace.WithSpanProcessor(p))
+	}
+
+	if cfg.oTelToCloud {
+		exporter, err := gcpTraceExporter(ctx, cfg.Credentials)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create GCP trace exporter: %w", err)
+		}
+		opts = append(opts, sdktrace.WithBatcher(exporter))
+	}
+
+	tp := sdktrace.NewTracerProvider(
+		opts...,
+	)
+
+	return tp, nil
+}
+
+func gcpTraceExporter(ctx context.Context, credentials *google.Credentials) (sdktrace.SpanExporter, error) {
+	// projectID := cfg.Credentials.ProjectID
+	// set OTEL_RESOURCE_ATTRIBUTES="gcp.project_id=<project_id>"
+	// set endpoint with OTEL_EXPORTER_OTLP_ENDPOINT=https://<endpoint>
+	return otlptracehttp.New(ctx,
+		otlptracehttp.WithHTTPClient(oauth2.NewClient(ctx, credentials.TokenSource)),
+		otlptracehttp.WithEndpointURL("https://telemetry.googleapis.com/v1/traces"),
+		otlptracehttp.WithHeaders(map[string]string{
+			// // TODO do we need it?
+			// "x-goog-user-project": projectID,
+		}))
+}

@@ -19,6 +19,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 // A Route defines the parameters for an api endpoint
@@ -49,7 +50,7 @@ func SetupSubRouters(router *mux.Router, subrouters ...Router) {
 	for _, api := range subrouters {
 		for _, route := range api.Routes() {
 			var handler http.Handler = route.HandlerFunc
-
+			handler = otelhttp.NewHandler(handler, route.Name)
 			router.
 				Methods(route.Methods...).
 				Path(route.Pattern).

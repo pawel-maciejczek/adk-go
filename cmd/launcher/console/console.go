@@ -31,12 +31,14 @@ import (
 	"google.golang.org/adk/internal/cli/util"
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/session"
+	"google.golang.org/adk/telemetry"
 )
 
 // consoleConfig contains command-line params for console launcher
 type consoleConfig struct {
 	streamingMode       agent.StreamingMode
 	streamingModeString string // command-line param to be converted to agent.StreamingMode
+	otelToCloud         bool
 }
 
 // consoleLauncher allows to interact with an agent in console
@@ -52,6 +54,7 @@ func NewLauncher() launcher.SubLauncher {
 	fs := flag.NewFlagSet("console", flag.ContinueOnError)
 	fs.StringVar(&config.streamingModeString, "streaming_mode", string(agent.StreamingModeSSE),
 		fmt.Sprintf("defines streaming mode (%s|%s)", agent.StreamingModeNone, agent.StreamingModeSSE))
+	fs.BoolVar(&config.otelToCloud, "otel_to_cloud", false, "Enables/disables OpenTelemetry export to cloud")
 
 	return &consoleLauncher{config: config, flags: fs}
 }
@@ -187,5 +190,22 @@ func (l *consoleLauncher) Execute(ctx context.Context, config *launcher.Config, 
 	if err != nil {
 		return fmt.Errorf("cannot parse all the arguments: %w", err)
 	}
+	telemetry, err := l.initTelemetry(ctx, config)
+	if err != nil {
+		return fmt.Errorf("telemetry initialization failed: %v", err)
+	}
+	defer telemetry.Shutdown(ctx)
 	return l.Run(ctx, config)
+}
+
+func (w *consoleLauncher) initTelemetry(ctx context.Context, config *launcher.Config) (telemetry.Telemetry, error) {
+	if w.config.otelToCloud {
+		config.TelemetryOptions = append(config.TelemetryOptions, telemetry.WithOtelToCloud(true))
+	}
+	telemetry, err := telemetry.New(ctx, config.TelemetryOptions...)
+	if err != nil {
+		return nil, err
+	}
+	telemetry.SetGlobalProviders()
+	return telemetry, nil
 }

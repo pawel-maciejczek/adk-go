@@ -17,9 +17,17 @@
 package telemetry
 
 import (
+	"context"
+
+	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	internaltelemetry "google.golang.org/adk/internal/telemetry"
+	internal "google.golang.org/adk/internal/telemetry"
+)
+
+const (
+	SystemName = internal.SystemName
 )
 
 // RegisterSpanProcessor registers the span processor to local trace provider instance.
@@ -27,6 +35,58 @@ import (
 // the registration will be ignored.
 // In addition to the RegisterSpanProcessor function, global trace provider configs
 // are respected.
+//
+// Deprecated
 func RegisterSpanProcessor(processor sdktrace.SpanProcessor) {
-	internaltelemetry.AddSpanProcessor(processor)
+	internal.AddSpanProcessor(processor)
+}
+
+func Configure(ctx context.Context, opts ...Option) (*config, error) {
+	return configureInternal(ctx, opts...)
+}
+
+// Telemetry wraps all telemetry providers and implements functions for telemetry lifecycle management.
+type Telemetry interface {
+	// SetGlobalProviders sets the configured providers as global OTel registry.
+	SetGlobalProviders()
+	// TraceProvider returns the configured TraceProvider or nil.
+	TraceProvider() *sdktrace.TracerProvider
+	// TraceProvider returns the configured MeterProvider or nil.
+	MeterProvider() *sdkmetric.MeterProvider
+	// TraceProvider returns the configured LoggerProvider or nil.
+	LoggerProvider() *sdklog.LoggerProvider
+	// Shutdown shuts down underlying OTel providers.
+	Shutdown(ctx context.Context) error
+}
+
+// New initializes new telemetry.
+// By default it initializes TraceProvider, LogProvider and MeterProvider.
+// Options can be used to customize the defaults, e.g. use custom credentials, add SpanProcessors or use preconfigured TraceProvider.
+// Telemetry providers should be installed in otel using InstallGlobal() function.
+//
+// # Usage
+//
+//	 func main() {
+//			telemetry, err := telemetry.New(ctx,
+//				telemetry.WithOtelToCloud(true),
+//				telemetry.WithResource(resource.NewWithAttributes(
+//					semconv.SchemaURL,
+//					attribute.String("service.name", "my-service"),
+//				)),
+//			)
+//			if err != nil {
+//				log.Fatal(err)
+//			}
+//			defer telemetry.Shutdown(context.WithoutCancel(ctx))
+//			telemetry.InstallGlobal()
+//			// app code
+//		}
+//
+// The caller must call Shutdown() method to gracefully shutdown underlying telemetry and release resources.
+func New(ctx context.Context, opts ...Option) (Telemetry, error) {
+	cfg, err := Configure(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return newInternal(ctx, cfg)
 }
