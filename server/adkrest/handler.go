@@ -21,19 +21,25 @@ import (
 	"github.com/gorilla/mux"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
+	"go.opentelemetry.io/contrib/instrumentation/github.com/gorilla/mux/otelmux"
 	"google.golang.org/adk/cmd/launcher"
-	"google.golang.org/adk/internal/telemetry"
 	"google.golang.org/adk/server/adkrest/controllers"
 	"google.golang.org/adk/server/adkrest/internal/routers"
 	"google.golang.org/adk/server/adkrest/internal/services"
+	"google.golang.org/adk/telemetry"
 )
 
 // NewHandler creates and returns an http.Handler for the ADK REST API.
 func NewHandler(config *launcher.Config, sseWriteTimeout time.Duration) http.Handler {
 	adkExporter := services.NewAPIServerSpanExporter()
-	telemetry.AddSpanProcessor(sdktrace.NewSimpleSpanProcessor(adkExporter))
+	processor := sdktrace.NewSimpleSpanProcessor(adkExporter)
+	telemetry.RegisterSpanProcessor(processor)
+	config.TelemetryOptions = append(config.TelemetryOptions, telemetry.WithSpanProcessors(processor))
 
+	otelmiddleware := otelmux.Middleware(telemetry.SystemName)
 	router := mux.NewRouter().StrictSlash(true)
+	router.Use(otelmiddleware)
+
 	// TODO: Allow taking a prefix to allow customizing the path
 	// where the ADK REST API will be served.
 	setupRouter(router,

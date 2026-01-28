@@ -17,9 +17,17 @@
 package telemetry
 
 import (
+	"context"
+
+	sdklog "go.opentelemetry.io/otel/sdk/log"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
-	internaltelemetry "google.golang.org/adk/internal/telemetry"
+	internal "google.golang.org/adk/internal/telemetry"
+)
+
+const (
+	SystemName = internal.SystemName
 )
 
 // RegisterSpanProcessor registers the span processor to local trace provider instance.
@@ -27,6 +35,48 @@ import (
 // the registration will be ignored.
 // In addition to the RegisterSpanProcessor function, global trace provider configs
 // are respected.
+//
+// Deprecated
 func RegisterSpanProcessor(processor sdktrace.SpanProcessor) {
-	internaltelemetry.AddSpanProcessor(processor)
+	internal.AddSpanProcessor(processor)
+}
+
+// Telemetry wraps all telemetry providers and implements functions for telemetry lifecycle management.
+type Telemetry interface {
+	// InstallGlobal installs global otel providers.
+	InstallGlobal()
+	// TraceProvider returns the configured TraceProvider or nil.
+	TraceProvider() *sdktrace.TracerProvider
+	// TraceProvider returns the configured MeterProvider or nil.
+	MeterProvider() *sdkmetric.MeterProvider
+	// TraceProvider returns the configured LoggerProvider or nil.
+	LoggerProvider() *sdklog.LoggerProvider
+	// Shutdown gracefully shuts down underlying telemetry providers.
+	// Shutdown must be called before exit to correctly release all resources.
+	Shutdown(ctx context.Context) error
+}
+
+// New initializes new telemetry.
+// By default it initializes TraceProvider, LogProvider and MeterProvider.
+// Options can be used to customize them or disable one or few providers.
+// Telemetry providers should be installed in otel using InstallGlobal() function.
+//
+// # Usage
+//
+//	telemetry, err := telemetry.New(ctx,
+//		telemetry.WithOtelToCloud(),
+//		telemetry.WithResource(resource.NewWithAttributes(
+//			semconv.SchemaURL,
+//			attribute.String("service.name", "my-service"),
+//		)),
+//	)
+//	if err != nil {
+//		log.Fatal(err)
+//	}
+//	defer telemetry.Shutdown(context.WithoutCancel(ctx))
+//	telemetry.InstallGlobal()
+//
+// The caller must call Shutdown() method to gracefully shutdown underlying telemetry and release resources.
+func New(ctx context.Context, opts ...Option) (Telemetry, error) {
+	return newInternal(ctx, opts...)
 }

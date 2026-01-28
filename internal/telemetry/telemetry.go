@@ -29,10 +29,8 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/genai"
 
-	"google.golang.org/adk/agent"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
 )
 
 type tracerProviderHolder struct {
@@ -54,7 +52,7 @@ var (
 )
 
 const (
-	systemName           = "gcp.vertex.agent"
+	SystemName           = "gcp.vertex.agent"
 	genAiOperationName   = "gen_ai.operation.name"
 	genAiToolDescription = "gen_ai.tool.description"
 	genAiToolName        = "gen_ai.tool.name"
@@ -85,7 +83,10 @@ const (
 )
 
 // AddSpanProcessor adds a span processor to the local tracer config.
+//
+// Deprecated
 func AddSpanProcessor(processor sdktrace.SpanProcessor) {
+	// sdktrace.WithSpanProcessor(processor)
 	localTracerConfig.mu.Lock()
 	defer localTracerConfig.mu.Unlock()
 	localTracerConfig.spanProcessors = append(localTracerConfig.spanProcessors, processor)
@@ -93,6 +94,8 @@ func AddSpanProcessor(processor sdktrace.SpanProcessor) {
 
 // RegisterTelemetry sets up the local tracer that will be used to emit traces.
 // We use local tracer to respect the global tracer configurations.
+//
+// Deprecated
 func RegisterTelemetry() {
 	once.Do(func() {
 		traceProvider := sdktrace.NewTracerProvider()
@@ -114,12 +117,14 @@ func getTracers() []trace.Tracer {
 		RegisterTelemetry()
 	}
 	return []trace.Tracer{
-		localTracer.tp.Tracer(systemName),
-		otel.GetTracerProvider().Tracer(systemName),
+		localTracer.tp.Tracer(SystemName),
+		otel.GetTracerProvider().Tracer(SystemName),
 	}
 }
 
 // StartTrace returns two spans to start emitting events, one from global tracer and second from the local.
+//
+// Deprecated
 func StartTrace(ctx context.Context, traceName string) []trace.Span {
 	tracers := getTracers()
 	spans := make([]trace.Span, len(tracers))
@@ -131,6 +136,8 @@ func StartTrace(ctx context.Context, traceName string) []trace.Span {
 }
 
 // TraceMergedToolCalls traces the tool execution events.
+//
+// Deprecated
 func TraceMergedToolCalls(spans []trace.Span, fnResponseEvent *session.Event) {
 	if fnResponseEvent == nil {
 		return
@@ -153,8 +160,16 @@ func TraceMergedToolCalls(spans []trace.Span, fnResponseEvent *session.Event) {
 	}
 }
 
+
+type traceableTool interface {
+	Name() string
+	Description() string
+}
+
 // TraceToolCall traces the tool execution events.
-func TraceToolCall(spans []trace.Span, tool tool.Tool, fnArgs map[string]any, fnResponseEvent *session.Event) {
+//
+// Deprecated
+func TraceToolCall(spans []trace.Span, tool traceableTool, fnArgs map[string]any, fnResponseEvent *session.Event) {
 	if fnResponseEvent == nil {
 		return
 	}
@@ -201,11 +216,12 @@ func TraceToolCall(spans []trace.Span, tool tool.Tool, fnArgs map[string]any, fn
 }
 
 // TraceLLMCall fills the call_llm event details.
-func TraceLLMCall(spans []trace.Span, agentCtx agent.InvocationContext, llmRequest *model.LLMRequest, event *session.Event) {
-	sessionID := agentCtx.Session().ID()
+//
+// Deprecated
+func TraceLLMCall(spans []trace.Span, sessionID string, llmRequest *model.LLMRequest, event *session.Event) {
 	for _, span := range spans {
 		attributes := []attribute.KeyValue{
-			attribute.String(genAiSystemName, systemName),
+			attribute.String(genAiSystemName, SystemName),
 			attribute.String(genAiRequestModelName, llmRequest.Model),
 			attribute.String(gcpVertexAgentInvocationID, event.InvocationID),
 			attribute.String(gcpVertexAgentSessionID, sessionID),

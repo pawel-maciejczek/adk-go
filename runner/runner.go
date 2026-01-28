@@ -39,6 +39,7 @@ import (
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/plugin"
 	"google.golang.org/adk/session"
+	"google.golang.org/adk/telemetry"
 )
 
 // Config is used to create a [Runner].
@@ -54,11 +55,17 @@ type Config struct {
 	MemoryService memory.Service
 	// optional
 	PluginConfig PluginConfig
+
+	// optional
+	Telemetry []telemetry.Option
 }
 
 type PluginConfig struct {
 	Plugins      []*plugin.Plugin
 	CloseTimeout time.Duration
+
+	// optional
+	Telemetry []telemetry.Option
 }
 
 // New creates a new [Runner].
@@ -115,7 +122,7 @@ type Runner struct {
 func (r *Runner) Run(ctx context.Context, userID, sessionID string, msg *genai.Content, cfg agent.RunConfig) iter.Seq2[*session.Event, error] {
 	// TODO(hakim): we need to validate whether cfg is compatible with the Agent.
 	//   see adk-python/src/google/adk/runners.py Runner._new_invocation_context.
-	// TODO: setup tracer.
+	// TODO(pmaciejczek): setup tracer.
 	return func(yield func(*session.Event, error) bool) {
 		resp, err := r.sessionService.Get(ctx, &session.GetRequest{
 			AppName:   r.appName,

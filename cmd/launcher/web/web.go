@@ -30,6 +30,7 @@ import (
 	"google.golang.org/adk/cmd/launcher/universal"
 	"google.golang.org/adk/internal/cli/util"
 	"google.golang.org/adk/session"
+	"google.golang.org/adk/telemetry"
 )
 
 // webConfig contains parameters for launching web server
@@ -39,6 +40,7 @@ type webConfig struct {
 	readTimeout     time.Duration
 	idleTimeout     time.Duration
 	shutdownTimeout time.Duration
+	otelToCloud     bool
 }
 
 // webLauncher can launch web server
@@ -193,6 +195,11 @@ func (w *webLauncher) Run(ctx context.Context, config *launcher.Config) error {
 		close(errChan)
 	}()
 
+	telemetry, err := w.initTelemetry(ctx, config)
+	if err != nil {
+		return fmt.Errorf("telemetry initialization failed: %v", err)
+	}
+
 	select {
 	case <-ctx.Done():
 		log.Println("Shutting down the web server...")
@@ -201,6 +208,9 @@ func (w *webLauncher) Run(ctx context.Context, config *launcher.Config) error {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("server shutdown failed: %v", err)
 		}
+		if err := telemetry.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("telemetry shutdown failed: %v", err)
+		}
 		return nil
 	case err, ok := <-errChan:
 		if !ok {
@@ -208,6 +218,21 @@ func (w *webLauncher) Run(ctx context.Context, config *launcher.Config) error {
 		}
 		return fmt.Errorf("server failed: %v", err)
 	}
+}
+
+func (w *webLauncher) initTelemetry(ctx context.Context, config *launcher.Config) (telemetry.Telemetry, error) {
+	if w.config.otelToCloud {
+		config.TelemetryOptions = append(config.TelemetryOptions, telemetry.WithOtelToCloud())
+	}
+	log.Printf("Starting telemetry...")
+	telemetry, err := telemetry.New(ctx, config.TelemetryOptions...)
+	if err != nil {
+		return nil, err
+	}
+	log.Printf("Telemetry started.")
+	telemetry.InstallGlobal()
+	log.Printf("Installed global otel providers.")
+	return telemetry, nil
 }
 
 // SimpleDescription implements launcher.SubLauncher.
@@ -226,6 +251,7 @@ func NewLauncher(sublaunchers ...Sublauncher) launcher.SubLauncher {
 	fs.DurationVar(&config.readTimeout, "read-timeout", 15*time.Second, "Server read timeout (i.e. '10s', '2m' - see time.ParseDuration for details) - for reading the whole request including body")
 	fs.DurationVar(&config.idleTimeout, "idle-timeout", 60*time.Second, "Server idle timeout (i.e. '10s', '2m' - see time.ParseDuration for details) - for waiting for the next request (only when keep-alive is enabled)")
 	fs.DurationVar(&config.shutdownTimeout, "shutdown-timeout", 15*time.Second, "Server shutdown timeout (i.e. '10s', '2m' - see time.ParseDuration for details) - for waiting for active requests to finish during shutdown")
+	fs.BoolVar(&config.otelToCloud, "otel_to_cloud", false, "Whether to enable OpenTelemetry export to cloud")
 
 	return &webLauncher{
 		config:       config,
@@ -250,9 +276,14 @@ func logger(inner http.Handler) http.Handler {
 	})
 }
 
+func otelMiddleware(next http.Handler) http.Handler {
+	return next
+}
+
 // BuildBaseRouter returns the main router, which can be extended by sub-routers.
 func BuildBaseRouter() *mux.Router {
 	router := mux.NewRouter().StrictSlash(true)
+	router.Use(otelMiddleware)
 	router.Use(logger)
 	return router
 }

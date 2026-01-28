@@ -33,6 +33,7 @@ import (
 type apiConfig struct {
 	frontendAddress string
 	sseWriteTimeout time.Duration
+	// telemetryProcessor TODO
 }
 
 // apiLauncher can launch ADK REST API
