@@ -525,7 +525,7 @@ func (f *Flow) handleFunctionCalls(ctx agent.InvocationContext, toolsDict map[st
 
 		fnResponseEvents = append(fnResponseEvents, ev)
 	}
-	mergedEvent, err := mergeParallelFunctionResponseEvents(fnResponseEvents)
+	mergedEvent, err = mergeParallelFunctionResponseEvents(fnResponseEvents)
 	if err != nil {
 		return mergedEvent, err
 	}

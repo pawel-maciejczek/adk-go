@@ -25,6 +25,7 @@ import (
 	"google.golang.org/adk/memory"
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/session"
+	"google.golang.org/adk/telemetry"
 )
 
 // Launcher is the main interface for running an ADK application.
@@ -55,10 +56,12 @@ type SubLauncher interface {
 
 // Config contains parameters for web & console execution: sessions, artifacts, agents etc
 type Config struct {
-	SessionService  session.Service
-	ArtifactService artifact.Service
-	MemoryService   memory.Service
-	AgentLoader     agent.Loader
-	A2AOptions      []a2asrv.RequestHandlerOption
-	PluginConfig    runner.PluginConfig
+	SessionService   session.Service
+	ArtifactService  artifact.Service
+	MemoryService    memory.Service
+	AgentLoader      agent.Loader
+	A2AOptions       []a2asrv.RequestHandlerOption
+	PluginConfig     runner.PluginConfig
+	TelemetryConfig  telemetry.Config
+	TelemetryOptions []telemetry.Option
 }
