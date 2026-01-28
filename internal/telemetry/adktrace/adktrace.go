@@ -21,22 +21,22 @@ package adktrace
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	semconv "go.opentelemetry.io/otel/semconv/v1.36.0"
 	"go.opentelemetry.io/otel/trace"
-	"google.golang.org/genai"
-
-	"google.golang.org/adk/agent"
 	"google.golang.org/adk/internal/telemetry"
+	"google.golang.org/adk/internal/version"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/session"
-	"google.golang.org/adk/tool"
+	"google.golang.org/genai"
 )
 
-var tracer = otel.GetTracerProvider().Tracer(telemetry.SystemName)
-
 const (
+	systemName           = telemetry.SystemName
 	genAiOperationName   = "gen_ai.operation.name"
 	genAiToolDescription = "gen_ai.tool.description"
 	genAiToolName        = "gen_ai.tool.name"
@@ -66,6 +66,10 @@ const (
 	mergeToolName   = "(merged tools)"
 )
 
+// tracer is the tracer instance for ADK go.
+// The default value uses global tracer. adk-go version needs to be initialized in Init function. TODO update docs
+var tracer trace.Tracer = otel.GetTracerProvider().Tracer(systemName, trace.WithInstrumentationVersion(version.Version), trace.WithSchemaURL(""))
+
 // StartTrace returns two spans to start emitting events, one from global tracer and second from the local.
 func StartTrace(ctx context.Context, traceName string) (context.Context, trace.Span) {
 	return tracer.Start(ctx, traceName)
@@ -92,8 +96,13 @@ func TraceMergedToolCalls(span trace.Span, fnResponseEvent *session.Event) {
 	span.End()
 }
 
+type traceableTool interface {
+	Name() string
+	Description() string
+}
+
 // TraceToolCall traces the tool execution events.
-func TraceToolCall(span trace.Span, tool tool.Tool, fnArgs map[string]any, fnResponseEvent *session.Event) {
+func TraceToolCall(span trace.Span, tool traceableTool, fnArgs map[string]any, fnResponseEvent *session.Event) {
 	if fnResponseEvent == nil {
 		return
 	}
@@ -138,8 +147,7 @@ func TraceToolCall(span trace.Span, tool tool.Tool, fnArgs map[string]any, fnRes
 }
 
 // TraceLLMCall fills the call_llm event details.
-func TraceLLMCall(span trace.Span, agentCtx agent.InvocationContext, llmRequest *model.LLMRequest, event *session.Event) {
-	sessionID := agentCtx.Session().ID()
+func TraceLLMCall(span trace.Span, sessionID string, llmRequest *model.LLMRequest, event *session.Event) {
 	attributes := []attribute.KeyValue{
 		attribute.String(genAiSystemName, telemetry.SystemName),
 		attribute.String(genAiRequestModelName, llmRequest.Model),
@@ -210,4 +218,114 @@ func llmRequestToTrace(llmRequest *model.LLMRequest) map[string]any {
 		result["content"] = append(result["content"].([]*genai.Content), filteredContent)
 	}
 	return result
+}
+
+type InvokeAgentParams struct {
+	AgentName        string
+	AgentDescription string
+	SessionID        string
+}
+
+// StartInvokeAgent starts the invoke_agent span.
+func StartInvokeAgent(ctx context.Context, params InvokeAgentParams) (context.Context, trace.Span) {
+	agentName := params.AgentName
+	spanCtx, span := tracer.Start(ctx, fmt.Sprintf("invoke_agent %s", agentName), trace.WithAttributes(
+		semconv.GenAIOperationNameInvokeAgent,
+		semconv.GenAIAgentDescription(params.AgentDescription),
+		semconv.GenAIAgentName(agentName),
+		semconv.GenAIConversationID(params.SessionID),
+	))
+
+	return spanCtx, span
+}
+
+func AfterInvokeAgent(span trace.Span, e *session.Event, err error) {
+	recordErrorAndStatus(span, err)
+	// TODO responses, etc
+}
+
+type GenerateContentParams struct {
+	ModelName string
+}
+
+// StartInvokeModel starts new generate_content span.
+func StartGenerateContent(ctx context.Context, params GenerateContentParams) (context.Context, trace.Span) {
+	modelName := params.ModelName
+	spanCtx, span := tracer.Start(ctx, fmt.Sprintf("generate_content %s", modelName), trace.WithAttributes(
+		semconv.GenAIOperationNameGenerateContent,
+		semconv.GenAIRequestModel(modelName),
+		semconv.GenAIUsageInputTokens(123),
+	))
+	return spanCtx, span
+}
+
+func AfterGenerateContent(span trace.Span, resp *model.LLMResponse, err error) {
+	recordErrorAndStatus(span, err)
+	span.SetAttributes(
+		semconv.GenAIUsageOutputTokens(123),
+		semconv.GenAIResponseFinishReasons(""),
+		attribute.String("gcp.vertex.agent.event_id", "TODO"),
+	)
+}
+
+type ExecuteToolParams struct {
+	ToolName  string
+	ModelName string
+}
+
+// StartExecuteTool starts new execute_tool span.
+func StartExecuteTool(ctx context.Context, params ExecuteToolParams) (context.Context, trace.Span) {
+	toolName := params.ToolName
+	modelName := params.ModelName
+	spanCtx, span := tracer.Start(ctx, fmt.Sprintf("execute_tool %s", toolName), trace.WithAttributes(
+		semconv.GenAIOperationNameExecuteTool,
+		semconv.GenAIRequestModel(modelName),
+		semconv.GenAIUsageInputTokens(123),
+	))
+	return spanCtx, span
+}
+
+func AfterExecuteTool(span trace.Span, result map[string]any) {
+	var err error
+	errVal, _ := result["error"]
+	if errVal != nil {
+		err = errVal.(error)
+	}
+	recordErrorAndStatus(span, err)
+}
+
+// TraceMergedToolCalls traces the tool execution events.
+func StartMergedToolCalls(ctx context.Context) (context.Context, trace.Span) {
+	mergedToolName := "(merged tools)"
+	ctx, span := tracer.Start(ctx, "execute_tool (merged)", trace.WithAttributes(
+		semconv.GenAIOperationNameExecuteTool,
+		semconv.GenAIToolName(mergedToolName),
+		semconv.GenAIToolDescription(mergedToolName),
+		// Setting empty llm request and response (as UI expect these) while not
+		// applicable for tool_response.
+		attribute.String(gcpVertexAgentLLMRequestName, "{}"),
+		attribute.String(gcpVertexAgentLLMRequestName, "{}"),
+		attribute.String(gcpVertexAgentToolCallArgsName, "N/A"),
+	))
+	return ctx, span
+}
+
+func AfterMergedToolCalls(span trace.Span, fnResponseEvent *session.Event, err error) {
+	if fnResponseEvent == nil {
+		return
+	}
+	recordErrorAndStatus(span, err)
+	span.SetAttributes(
+		attribute.String(gcpVertexAgentEventID, fnResponseEvent.ID),
+		attribute.String(gcpVertexAgentToolResponseName, safeSerialize(fnResponseEvent)),
+	)
+}
+
+func recordErrorAndStatus(span trace.Span, err error) {
+	span.RecordError(err)
+	if err != nil {
+		span.SetStatus(codes.Error, err.Error())
+	} else {
+		span.SetStatus(codes.Ok, "")
+	}
 }

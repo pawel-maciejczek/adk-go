@@ -24,6 +24,7 @@ import (
 	"google.golang.org/adk/artifact"
 	agentinternal "google.golang.org/adk/internal/agent"
 	"google.golang.org/adk/internal/plugininternal/plugincontext"
+	"google.golang.org/adk/internal/telemetry/adktrace"
 	"google.golang.org/adk/memory"
 	"google.golang.org/adk/model"
 	"google.golang.org/adk/session"
@@ -156,7 +157,20 @@ func (a *agent) SubAgents() []Agent {
 }
 
 func (a *agent) Run(ctx InvocationContext) iter.Seq2[*session.Event, error] {
+	// TODO instrument agent, this should work for all agents (local, llm, custom, remote, etc)
 	return func(yield func(*session.Event, error) bool) {
+		tctx, span := adktrace.StartInvokeAgent(ctx, adktrace.InvokeAgentParams{
+			AgentName:        a.name,
+			AgentDescription: a.description,
+			SessionID:        ctx.Session().ID(),
+		})
+		defer span.End()
+		ctx = ctx.WithContext(tctx)
+		originalYield := yield
+		yield = func(event *session.Event, err error) bool {
+			adktrace.AfterInvokeAgent(span, event, err)
+			return originalYield(event, err)
+		}
 		// TODO: verify&update the setup here. Should we branch etc.
 		ctx := &invocationContext{
 			Context:   ctx,
