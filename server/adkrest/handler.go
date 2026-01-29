@@ -33,7 +33,6 @@ import (
 func NewHandler(config *launcher.Config, sseWriteTimeout time.Duration) http.Handler {
 	adkExporter := services.NewAPIServerSpanExporter()
 	processor := sdktrace.NewSimpleSpanProcessor(adkExporter)
-	telemetry.RegisterSpanProcessor(processor)
 	config.TelemetryOptions = append(config.TelemetryOptions, telemetry.WithSpanProcessors(processor))
 
 	router := mux.NewRouter().StrictSlash(true)

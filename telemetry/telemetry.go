@@ -30,17 +30,6 @@ const (
 	SystemName = internal.SystemName
 )
 
-// RegisterSpanProcessor registers the span processor to local trace provider instance.
-// Any processor should be registered BEFORE any of the events are emitted, otherwise
-// the registration will be ignored.
-// In addition to the RegisterSpanProcessor function, global trace provider configs
-// are respected.
-//
-// Deprecated
-func RegisterSpanProcessor(processor sdktrace.SpanProcessor) {
-	internal.AddSpanProcessor(processor)
-}
-
 func Configure(ctx context.Context, opts ...Option) (*Config, error) {
 	return configureInternal(ctx, opts...)
 }

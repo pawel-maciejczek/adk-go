@@ -135,7 +135,9 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 		if ctx.Ended() {
 			return
 		}
-		spans := telemetry.StartTrace(ctx, "call_llm")
+		sctx, span := telemetry.StartTrace(ctx, "call_llm")
+		ctx := ctx.WithContext(sctx)
+		defer span.End()
 		// Create event to pass to callback state delta
 		stateDelta := make(map[string]any)
 		// Calls the LLM.
@@ -169,7 +171,7 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 
 			// Build the event and yield.
 			modelResponseEvent := f.finalizeModelResponseEvent(ctx, resp, tools, stateDelta)
-			telemetry.TraceLLMCall(spans, ctx, req, modelResponseEvent)
+			telemetry.TraceLLMCall(span, ctx, req, modelResponseEvent)
 			if !yield(modelResponseEvent, nil) {
 				return
 			}
@@ -477,9 +479,11 @@ func (f *Flow) handleFunctionCalls(ctx agent.InvocationContext, toolsDict map[st
 	toolNames := slices.Collect(maps.Keys(toolsDict))
 	var result map[string]any
 	for _, fnCall := range fnCalls {
+		sctx, span := telemetry.StartTrace(ctx, "execute_tool "+fnCall.Name)
+		defer span.End()
+		ctx = ctx.WithContext(sctx)
 		toolCtx := toolinternal.NewToolContext(ctx, fnCall.ID, &session.EventActions{StateDelta: make(map[string]any)})
 
-		spans := telemetry.StartTrace(ctx, "execute_tool "+fnCall.Name)
 		curTool, found := toolsDict[fnCall.Name]
 		if !found {
 			err := newToolNotFoundError(fnCall.Name, toolNames)
@@ -521,17 +525,17 @@ func (f *Flow) handleFunctionCalls(ctx agent.InvocationContext, toolsDict map[st
 		if traceTool == nil {
 			traceTool = &fakeTool{name: fnCall.Name}
 		}
-		telemetry.TraceToolCall(spans, traceTool, fnCall.Args, ev)
+		telemetry.TraceToolCall(span, traceTool, fnCall.Args, ev)
 
 		fnResponseEvents = append(fnResponseEvents, ev)
 	}
-	mergedEvent, err = mergeParallelFunctionResponseEvents(fnResponseEvents)
+	mergedEvent, err := mergeParallelFunctionResponseEvents(fnResponseEvents)
 	if err != nil {
 		return mergedEvent, err
 	}
 	// this is needed for debug traces of parallel calls
-	spans := telemetry.StartTrace(ctx, "execute_tool (merged)")
-	telemetry.TraceMergedToolCalls(spans, mergedEvent)
+	_, span := telemetry.StartTrace(ctx, "execute_tool (merged)")
+	telemetry.TraceMergedToolCalls(span, mergedEvent)
 	return mergedEvent, nil
 }
 
