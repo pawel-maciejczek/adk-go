@@ -30,7 +30,7 @@ import (
 	"google.golang.org/adk/internal/agent/runconfig"
 	icontext "google.golang.org/adk/internal/context"
 	"google.golang.org/adk/internal/plugininternal/plugincontext"
-	"google.golang.org/adk/internal/telemetry"
+	"google.golang.org/adk/internal/telemetry/adktrace"
 	"google.golang.org/adk/internal/toolinternal"
 	"google.golang.org/adk/internal/utils"
 	"google.golang.org/adk/model"
@@ -135,7 +135,7 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 		if ctx.Ended() {
 			return
 		}
-		sctx, span := telemetry.StartTrace(ctx, "call_llm")
+		sctx, span := adktrace.StartTrace(ctx, "call_llm")
 		ctx := ctx.WithContext(sctx)
 		defer span.End()
 		// Create event to pass to callback state delta
@@ -171,7 +171,7 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 
 			// Build the event and yield.
 			modelResponseEvent := f.finalizeModelResponseEvent(ctx, resp, tools, stateDelta)
-			telemetry.TraceLLMCall(span, ctx, req, modelResponseEvent)
+			adktrace.TraceLLMCall(span, ctx, req, modelResponseEvent)
 			if !yield(modelResponseEvent, nil) {
 				return
 			}
@@ -479,7 +479,7 @@ func (f *Flow) handleFunctionCalls(ctx agent.InvocationContext, toolsDict map[st
 	toolNames := slices.Collect(maps.Keys(toolsDict))
 	var result map[string]any
 	for _, fnCall := range fnCalls {
-		sctx, span := telemetry.StartTrace(ctx, "execute_tool "+fnCall.Name)
+		sctx, span := adktrace.StartTrace(ctx, "execute_tool "+fnCall.Name)
 		defer span.End()
 		ctx = ctx.WithContext(sctx)
 		toolCtx := toolinternal.NewToolContext(ctx, fnCall.ID, &session.EventActions{StateDelta: make(map[string]any)})
@@ -525,7 +525,7 @@ func (f *Flow) handleFunctionCalls(ctx agent.InvocationContext, toolsDict map[st
 		if traceTool == nil {
 			traceTool = &fakeTool{name: fnCall.Name}
 		}
-		telemetry.TraceToolCall(span, traceTool, fnCall.Args, ev)
+		adktrace.TraceToolCall(span, traceTool, fnCall.Args, ev)
 
 		fnResponseEvents = append(fnResponseEvents, ev)
 	}
@@ -534,8 +534,8 @@ func (f *Flow) handleFunctionCalls(ctx agent.InvocationContext, toolsDict map[st
 		return mergedEvent, err
 	}
 	// this is needed for debug traces of parallel calls
-	_, span := telemetry.StartTrace(ctx, "execute_tool (merged)")
-	telemetry.TraceMergedToolCalls(span, mergedEvent)
+	_, span := adktrace.StartTrace(ctx, "execute_tool (merged)")
+	adktrace.TraceMergedToolCalls(span, mergedEvent)
 	return mergedEvent, nil
 }
 
