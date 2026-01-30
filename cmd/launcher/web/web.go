@@ -27,10 +27,10 @@ import (
 	"github.com/gorilla/mux"
 
 	"google.golang.org/adk/cmd/launcher"
+	"google.golang.org/adk/cmd/launcher/telemetry"
 	"google.golang.org/adk/cmd/launcher/universal"
 	"google.golang.org/adk/internal/cli/util"
 	"google.golang.org/adk/session"
-	"google.golang.org/adk/telemetry"
 )
 
 // webConfig contains parameters for launching web server
@@ -195,7 +195,7 @@ func (w *webLauncher) Run(ctx context.Context, config *launcher.Config) error {
 		close(errChan)
 	}()
 
-	telemetry, err := w.initTelemetry(ctx, config)
+	telemetry, err := telemetry.InitTelemetry(ctx, config, w.config.otelToCloud)
 	if err != nil {
 		return fmt.Errorf("telemetry initialization failed: %v", err)
 	}
@@ -218,18 +218,6 @@ func (w *webLauncher) Run(ctx context.Context, config *launcher.Config) error {
 		}
 		return fmt.Errorf("server failed: %v", err)
 	}
-}
-
-func (w *webLauncher) initTelemetry(ctx context.Context, config *launcher.Config) (telemetry.Telemetry, error) {
-	if w.config.otelToCloud {
-		config.TelemetryOptions = append(config.TelemetryOptions, telemetry.WithOtelToCloud(true))
-	}
-	telemetry, err := telemetry.New(ctx, config.TelemetryOptions...)
-	if err != nil {
-		return nil, err
-	}
-	telemetry.SetGlobalOtelProviders()
-	return telemetry, nil
 }
 
 // SimpleDescription implements launcher.SubLauncher.

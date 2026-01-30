@@ -52,7 +52,7 @@ type config struct {
 	loggerProvider *sdklog.LoggerProvider
 }
 
-// Option configures a adk telemetry.
+// Option configures adk telemetry.
 type Option interface {
 	apply(*config) error
 }
@@ -63,7 +63,7 @@ func (fn optionFunc) apply(cfg *config) error {
 	return fn(cfg)
 }
 
-// WithOtelToCloud enables exporting telemetry to GCP.
+// WithOtelToCloud enables/disables exporting telemetry to GCP.
 func WithOtelToCloud(value bool) Option {
 	return optionFunc(func(cfg *config) error {
 		cfg.oTelToCloud = value

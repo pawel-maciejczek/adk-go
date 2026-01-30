@@ -27,11 +27,11 @@ import (
 
 	"google.golang.org/adk/agent"
 	"google.golang.org/adk/cmd/launcher"
+	"google.golang.org/adk/cmd/launcher/telemetry"
 	"google.golang.org/adk/cmd/launcher/universal"
 	"google.golang.org/adk/internal/cli/util"
 	"google.golang.org/adk/runner"
 	"google.golang.org/adk/session"
-	"google.golang.org/adk/telemetry"
 )
 
 // consoleConfig contains command-line params for console launcher
@@ -190,22 +190,10 @@ func (l *consoleLauncher) Execute(ctx context.Context, config *launcher.Config, 
 	if err != nil {
 		return fmt.Errorf("cannot parse all the arguments: %w", err)
 	}
-	telemetry, err := l.initTelemetry(ctx, config)
+	telemetry, err := telemetry.InitTelemetry(ctx, config, l.config.otelToCloud)
 	if err != nil {
 		return fmt.Errorf("telemetry initialization failed: %v", err)
 	}
 	defer telemetry.Shutdown(ctx)
 	return l.Run(ctx, config)
-}
-
-func (w *consoleLauncher) initTelemetry(ctx context.Context, config *launcher.Config) (telemetry.Telemetry, error) {
-	if w.config.otelToCloud {
-		config.TelemetryOptions = append(config.TelemetryOptions, telemetry.WithOtelToCloud(true))
-	}
-	telemetry, err := telemetry.New(ctx, config.TelemetryOptions...)
-	if err != nil {
-		return nil, err
-	}
-	telemetry.SetGlobalOtelProviders()
-	return telemetry, nil
 }
