@@ -1,4 +1,4 @@
-// Copyright 2025 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package telemetry allows to set up custom telemetry processors that the ADK events
-// will be emitted to.
+// Package telemetry implements the open telemetry in ADK.
 package telemetry
 
 import (
@@ -41,14 +40,10 @@ func RegisterSpanProcessor(processor sdktrace.SpanProcessor) {
 	internal.AddSpanProcessor(processor)
 }
 
-func Configure(ctx context.Context, opts ...Option) (*config, error) {
-	return configureInternal(ctx, opts...)
-}
-
 // Telemetry wraps all telemetry providers and implements functions for telemetry lifecycle management.
 type Telemetry interface {
-	// SetGlobalProviders sets the configured providers as global OTel registry.
-	SetGlobalProviders()
+	// SetGlobalOtelProviders registers the configured providers as the global OTel providers.
+	SetGlobalOtelProviders()
 	// TraceProvider returns the configured TraceProvider or nil.
 	TraceProvider() *sdktrace.TracerProvider
 	// TraceProvider returns the configured MeterProvider or nil.
@@ -59,10 +54,9 @@ type Telemetry interface {
 	Shutdown(ctx context.Context) error
 }
 
-// New initializes new telemetry.
-// By default it initializes TraceProvider, LogProvider and MeterProvider.
+// New initializes new telemetry and underlying providers - TraceProvider, LogProvider and MeterProvider.
 // Options can be used to customize the defaults, e.g. use custom credentials, add SpanProcessors or use preconfigured TraceProvider.
-// Telemetry providers should be installed in otel using InstallGlobal() function.
+// Telemetry providers have to be registered in otel global providers either manually or via [SetGlobalOtelProviders].
 //
 // # Usage
 //
@@ -78,13 +72,14 @@ type Telemetry interface {
 //				log.Fatal(err)
 //			}
 //			defer telemetry.Shutdown(context.WithoutCancel(ctx))
-//			telemetry.InstallGlobal()
+//			telemetry.SetGlobalOtelProviders()
+//
 //			// app code
 //		}
 //
-// The caller must call Shutdown() method to gracefully shutdown underlying telemetry and release resources.
+// The caller must call [Shutdown] method to gracefully shutdown underlying telemetry and release resources.
 func New(ctx context.Context, opts ...Option) (Telemetry, error) {
-	cfg, err := Configure(ctx, opts...)
+	cfg, err := configure(ctx, opts...)
 	if err != nil {
 		return nil, err
 	}

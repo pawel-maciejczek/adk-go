@@ -206,6 +206,6 @@ func (w *consoleLauncher) initTelemetry(ctx context.Context, config *launcher.Co
 	if err != nil {
 		return nil, err
 	}
-	telemetry.SetGlobalProviders()
+	telemetry.SetGlobalOtelProviders()
 	return telemetry, nil
 }
