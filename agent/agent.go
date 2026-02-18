@@ -49,6 +49,35 @@ type Agent interface {
 	internal() *agent
 }
 
+func wrapRun(ctx context.Context, in iter.Seq2[*session.Event, error]) iter.Seq2[*session.Event, error] {
+	events := make(chan struct {
+		event *session.Event
+		err   error
+	})
+	stop := make(chan struct{})
+	go func() {
+		defer close(events)
+		defer close(stop)
+		for event, err := range in {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stop:
+				return
+			default:
+				events <- struct{ event *session.Event; err error }{event: event, err: err}
+			}
+		}
+	}()
+	return func(yield func(*session.Event, error) bool) {
+		for e := range events {
+			if !yield(e.event, e.err) {
+				break
+			}
+		}
+	}
+}
+
 // New creates an Agent with a custom logic defined by Run function.
 func New(cfg Config) (Agent, error) {
 	subAgentSet := make(map[Agent]bool)
