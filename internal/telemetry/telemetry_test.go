@@ -210,6 +210,7 @@ func TestGenerateContent(t *testing.T) {
 					},
 					FinishReason: genai.FinishReasonStop,
 				},
+				EventID: "test-event-id",
 			},
 			wantName:   "generate_content test-model",
 			wantStatus: codes.Unset,
@@ -219,6 +220,7 @@ func TestGenerateContent(t *testing.T) {
 				semconv.GenAIUsageInputTokensKey:      "10",
 				semconv.GenAIUsageOutputTokensKey:     "20",
 				semconv.GenAIResponseFinishReasonsKey: "[\"STOP\"]",
+				gcpVertexAgentEventID:                 "test-event-id",
 			},
 		},
 		{
