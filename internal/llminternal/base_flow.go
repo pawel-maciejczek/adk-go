@@ -163,7 +163,7 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 			// Skip the model response event if there is no content and no error code.
 			// This is needed for the code executor to trigger another loop according to
 			// adk-python src/google/adk/flows/llm_flows/base_llm_flow.py BaseLlmFlow._postprocess_async.
-			if resp.Content == nil && resp.ErrorCode == "" && !resp.Interrupted {
+			if resp.LLMResponse.Content == nil && resp.LLMResponse.ErrorCode == "" && !resp.LLMResponse.Interrupted {
 				continue
 			}
 
@@ -188,7 +188,7 @@ func (f *Flow) runOneStep(ctx agent.InvocationContext) iter.Seq2[*session.Event,
 
 			// Handle function calls.
 
-			ev, err := f.handleFunctionCalls(ctx, tools, resp.LLMResponse, nil)
+			ev, err := f.handleFunctionCalls(ctx, tools, &resp.LLMResponse, nil)
 			if err != nil {
 				yield(nil, err)
 				return
@@ -283,24 +283,39 @@ func toolPreprocess(ctx agent.InvocationContext, req *model.LLMRequest, tools []
 	return nil
 }
 
-func (f *Flow) callLLM(ctx agent.InvocationContext, req *model.LLMRequest, stateDelta map[string]any) iter.Seq2[*responseWithEventID, error] {
-	return func(yield func(*responseWithEventID, error) bool) {
+func (f *Flow) callLLM(ctx agent.InvocationContext, req *model.LLMRequest, stateDelta map[string]any) iter.Seq2[*session.Event, error] {
+	return func(yield func(*session.Event, error) bool) {
 		pluginManager := pluginManagerFromContext(ctx)
 		if pluginManager != nil {
 			cctx := icontext.NewCallbackContextWithDelta(ctx, stateDelta)
 			callbackResponse, callbackErr := pluginManager.RunBeforeModelCallback(cctx, req)
 			if callbackResponse != nil || callbackErr != nil {
-				yield(newResponseWithEventID(callbackResponse), callbackErr)
+				var ev *session.Event
+				if callbackResponse != nil {
+					ev = &session.Event{
+						ID:          uuid.NewString(),
+						LLMResponse: *callbackResponse,
+					}
+				}
+				yield(ev, callbackErr)
 				return
 			}
 		}
+
 
 		for _, callback := range f.BeforeModelCallbacks {
 			cctx := icontext.NewCallbackContextWithDelta(ctx, stateDelta)
 			callbackResponse, callbackErr := callback(cctx, req)
 
 			if callbackResponse != nil || callbackErr != nil {
-				yield(newResponseWithEventID(callbackResponse), callbackErr)
+				var ev *session.Event
+				if callbackResponse != nil {
+					ev = &session.Event{
+						ID:          uuid.NewString(),
+						LLMResponse: *callbackResponse,
+					}
+				}
+				yield(ev, callbackErr)
 				return
 			}
 		}
@@ -322,17 +337,17 @@ func (f *Flow) callLLM(ctx agent.InvocationContext, req *model.LLMRequest, state
 					yield(nil, err)
 					return
 				}
-				resp = &responseWithEventID{
-					LLMResponse: cbResp,
-					eventID:     resp.eventID,
+				if resp == nil {
+					resp = &session.Event{ID: uuid.NewString()}
 				}
+				resp.LLMResponse = *cbResp
 				err = cbErr
 			}
 			// Function call ID is optional in genai API and some models do not use the field.
 			// Set it in case after model callbacks use it.
-			utils.PopulateClientFunctionCallID(resp.Content)
+			utils.PopulateClientFunctionCallID(resp.LLMResponse.Content)
 
-			callbackResp, callbackErr := f.runAfterModelCallbacks(ctx, resp.LLMResponse, stateDelta, err)
+			callbackResp, callbackErr := f.runAfterModelCallbacks(ctx, &resp.LLMResponse, stateDelta, err)
 			// TODO: check if we should stop iterator on the first error from stream or continue yielding next results.
 			if callbackErr != nil {
 				yield(nil, callbackErr)
@@ -340,18 +355,9 @@ func (f *Flow) callLLM(ctx agent.InvocationContext, req *model.LLMRequest, state
 			}
 
 			if callbackResp != nil {
-				resp := &responseWithEventID{
-					LLMResponse: callbackResp,
-					eventID:     resp.eventID,
-				}
-				if !yield(resp, nil) {
-					return
-				}
-				continue
-			}
-
-			// TODO: check if we should stop iterator on the first error from stream or continue yielding next results.
-			if err != nil {
+				resp.LLMResponse = *callbackResp
+			} else if err != nil {
+				// TODO: check if we should stop iterator on the first error from stream or continue yielding next results.
 				yield(nil, err)
 				return
 			}
@@ -363,20 +369,10 @@ func (f *Flow) callLLM(ctx agent.InvocationContext, req *model.LLMRequest, state
 	}
 }
 
-// responseWithEventID is a wrapper around model.LLMResponse and event ID.
-type responseWithEventID struct {
-	*model.LLMResponse
-	eventID string
-}
-
-func newResponseWithEventID(resp *model.LLMResponse) *responseWithEventID {
-	return &responseWithEventID{resp, uuid.New().String()}
-}
-
 // generateContent wraps the LLM call with tracing and logging.
 // The generate_content span should cover only calls to LLM. Plugins and callbacks should be outside of this span.
-func generateContent(ctx agent.InvocationContext, m model.LLM, req *model.LLMRequest, useStream bool) iter.Seq2[*responseWithEventID, error] {
-	return func(yield func(*responseWithEventID, error) bool) {
+func generateContent(ctx agent.InvocationContext, m model.LLM, req *model.LLMRequest, useStream bool) iter.Seq2[*session.Event, error] {
+	return func(yield func(*session.Event, error) bool) {
 		spanCtx, span := telemetry.StartGenerateContentSpan(ctx, telemetry.StartGenerateContentSpanParams{
 			ModelName: m.Name(),
 		})
@@ -385,7 +381,7 @@ func generateContent(ctx agent.InvocationContext, m model.LLM, req *model.LLMReq
 		// Log request before calling the model.
 		telemetry.LogRequest(ctx, req, backend)
 
-		var lastResponse responseWithEventID
+		var lastResponse *session.Event
 		var lastErr error
 		spanEnded := false
 		endSpanAndTrackResult := func() {
@@ -393,9 +389,15 @@ func generateContent(ctx agent.InvocationContext, m model.LLM, req *model.LLMReq
 				// Return to avoid spamming the logs with "span already ended" errors.
 				return
 			}
+			var resp *model.LLMResponse
+			var id string
+			if lastResponse != nil {
+				resp = &lastResponse.LLMResponse
+				id = lastResponse.ID
+			}
 			telemetry.TraceGenerateContentResult(span, telemetry.TraceGenerateContentResultParams{
-				Response: lastResponse.LLMResponse,
-				EventID:  lastResponse.eventID,
+				Response: resp,
+				EventID:  id,
 				Error:    lastErr,
 			})
 			span.End()
@@ -404,13 +406,20 @@ func generateContent(ctx agent.InvocationContext, m model.LLM, req *model.LLMReq
 		// Ensure that the span is ended in case of error or if none final responses are yielded before the yield returns false.
 		defer endSpanAndTrackResult()
 		for resp, err := range m.GenerateContent(ctx, req, useStream) {
-			response := newResponseWithEventID(resp)
-			lastResponse = *response
+			var response *session.Event
+			if resp != nil {
+				response = &session.Event{
+					ID:          uuid.NewString(), // Generate a new ID for each response chunk or complete response.
+					LLMResponse: *resp,
+				}
+				lastResponse = response
+			}
+
 			lastErr = err
 			// Complete the span immediately to avoid capturing the upstream yield processing time.
 			if err != nil {
 				endSpanAndTrackResult()
-			} else if !resp.Partial {
+			} else if resp != nil && !resp.Partial {
 				// Log only final responses.
 				telemetry.LogResponse(ctx, resp, backend)
 				endSpanAndTrackResult()
@@ -466,10 +475,10 @@ func (f *Flow) runOnModelErrorCallbacks(ctx agent.InvocationContext, llmReq *mod
 	return nil, nil
 }
 
-func (f *Flow) postprocess(ctx agent.InvocationContext, req *model.LLMRequest, resp *responseWithEventID) error {
+func (f *Flow) postprocess(ctx agent.InvocationContext, req *model.LLMRequest, resp *session.Event) error {
 	// apply response processor functions to the response in the configured order.
 	for _, processor := range f.ResponseProcessors {
-		if err := processor(ctx, req, resp.LLMResponse); err != nil {
+		if err := processor(ctx, req, &resp.LLMResponse); err != nil {
 			return err
 		}
 	}
@@ -490,22 +499,21 @@ func (f *Flow) agentToRun(ctx agent.InvocationContext, agentName string) agent.A
 	return nil
 }
 
-func (f *Flow) finalizeModelResponseEvent(ctx agent.InvocationContext, resp *responseWithEventID, tools map[string]tool.Tool, stateDelta map[string]any) *session.Event {
+func (f *Flow) finalizeModelResponseEvent(ctx agent.InvocationContext, resp *session.Event, tools map[string]tool.Tool, stateDelta map[string]any) *session.Event {
 	// FunctionCall & FunctionResponse matching algorithm assumes non-empty function call IDs
 	// but function call ID is optional in genai API and some models do not use the field.
 	// Generate function call ids. (see functions.populate_client_function_call_id in python SDK)
-	utils.PopulateClientFunctionCallID(resp.Content)
+	utils.PopulateClientFunctionCallID(resp.LLMResponse.Content)
 
-	ev := session.NewEventWithID(resp.eventID, ctx.InvocationID())
-	ev.Author = ctx.Agent().Name()
-	ev.Branch = ctx.Branch()
-	ev.LLMResponse = *resp.LLMResponse
-	ev.Actions.StateDelta = stateDelta
+	resp.InvocationID = ctx.InvocationID()
+	resp.Author = ctx.Agent().Name()
+	resp.Branch = ctx.Branch()
+	resp.Actions.StateDelta = stateDelta
 
 	// Populate ev.LongRunningToolIDs
-	ev.LongRunningToolIDs = findLongRunningFunctionCallIDs(resp.Content, tools)
+	resp.LongRunningToolIDs = findLongRunningFunctionCallIDs(resp.LLMResponse.Content, tools)
 
-	return ev
+	return resp
 }
 
 // findLongRunningFunctionCallIDs iterates over the FunctionCalls and
