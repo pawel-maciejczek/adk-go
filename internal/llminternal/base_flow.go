@@ -367,6 +367,8 @@ func (f *Flow) callLLM(ctx agent.InvocationContext, req *model.LLMRequest, state
 	}
 }
 
+// responseWithEventID is a wrapper around model.LLMResponse that includes the event ID.
+// eventID is generated for each response and is passed to telemetry to correlate generate_content spans with events.
 type responseWithEventID struct {
 	*model.LLMResponse
 	eventID string
@@ -496,8 +498,7 @@ func (f *Flow) finalizeModelResponseEvent(ctx agent.InvocationContext, resp *res
 	// Generate function call ids. (see functions.populate_client_function_call_id in python SDK)
 	utils.PopulateClientFunctionCallID(resp.Content)
 
-	ev := session.NewEvent(ctx.InvocationID())
-	ev.ID = resp.eventID // TODO change NewEvent to accept event id
+	ev := session.NewEventWithID(resp.eventID, resp.eventID)
 	ev.Author = ctx.Agent().Name()
 	ev.Branch = ctx.Branch()
 	ev.LLMResponse = *resp.LLMResponse

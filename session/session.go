@@ -131,8 +131,13 @@ func (e *Event) IsFinalResponse() bool {
 
 // NewEvent creates a new event defining now as the timestamp.
 func NewEvent(invocationID string) *Event {
+	return NewEventWithID(uuid.NewString(), invocationID)
+}
+
+// NewEventWithID creates a new event defining now as the timestamp with the given id.
+func NewEventWithID(id string, invocationID string) *Event {
 	return &Event{
-		ID:           uuid.NewString(),
+		ID:           id,
 		InvocationID: invocationID,
 		Timestamp:    time.Now(),
 		Actions:      EventActions{StateDelta: make(map[string]any)},
